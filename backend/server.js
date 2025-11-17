@@ -26,8 +26,8 @@ const upload = multer({
 async function generateSummaryAndQuizFromTranscript(transcript) {
   const prompt = `
 You are a helpful study assistant. I will give you a lecture or meeting transcript.
-1. Write a clear, student-friendly summary in 3–6 sentences.
-2. Create 3–5 multiple-choice questions that check understanding of the KEY ideas.
+1. Write a clear, student-friendly summary in 5–6 sentences.
+2. Create 8–12 multiple-choice questions that check understanding of the KEY ideas.
 3. Each question must have exactly 4 answer choices.
 4. Indicate which choice is correct using "correctIndex" (0-based).
 5. IMPORTANT: Return ONLY valid JSON, no extra text, no backticks, no commentary.
