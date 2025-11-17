@@ -41,7 +41,7 @@ function App() {
       const formData = new FormData();
       formData.append("audio", file);
 
-      const res = await fetch("http://localhost:5000/api/upload-audio", {
+      const res = await fetch("https://studybuddy-ai-js9w.onrender.com/api/upload-audio", {
         method: "POST",
         body: formData,
       });
