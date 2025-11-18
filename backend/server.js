@@ -81,7 +81,54 @@ ${transcript}
 }
 
 // Route: upload audio → transcribe → summarize → quiz
+// --- Audio upload → Whisper transcription → summary + quiz ---
 app.post("/api/upload-audio", upload.single("audio"), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: "No file uploaded" });
+    }
+
+    console.log("Received file:", req.file);
+
+    const filePath = req.file.path;
+
+    // 1) Send audio file to OpenAI Whisper for transcription
+    const transcription = await openai.audio.transcriptions.create({
+      file: fs.createReadStream(filePath),
+      model: "whisper-1", // Whisper accepts mp3, mp4, mpeg, mpga, m4a, wav, webm
+      response_format: "text",
+    });
+
+    const transcriptText = transcription.text;
+    console.log("Transcript text length:", transcriptText.length);
+
+    // 2) Use existing helper to generate summary + quiz
+    const { summary, quiz } = await generateSummaryAndQuizFromTranscript(
+      transcriptText
+    );
+
+    return res.json({ summary, quiz });
+  } catch (err) {
+    console.error("Error in /api/upload-audio:", err);
+
+    // If OpenAI says unsupported file format, send a nice message to the frontend
+    if (
+      err.error &&
+      err.error.code === "unsupported_value" &&
+      err.error.param === "file"
+    ) {
+      return res.status(400).json({
+        error:
+          "This audio format is not supported. Please upload an MP3, M4A, or WAV file.",
+      });
+    }
+
+    return res
+      .status(500)
+      .json({ error: "Server error while processing audio." });
+  }
+});
+
   try {
     console.log("Received file:", req.file);
 
