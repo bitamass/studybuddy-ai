@@ -1,4 +1,6 @@
+// server.js
 require("dotenv").config();
+
 const express = require("express");
 const cors = require("cors");
 const multer = require("multer");
@@ -6,162 +8,126 @@ const path = require("path");
 const fs = require("fs");
 const OpenAI = require("openai");
 
-// Create OpenAI client using your API key from .env
-const client = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+// ---- OpenAI client
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
+// ---- App + CORS (allow your Vercel site + local dev)
 const app = express();
-const PORT = 5000;
-
-app.use(cors());
+const PORT = process.env.PORT || 5000;
+app.use(
+  cors({
+    origin: [
+      "http://localhost:5173",
+      "http://localhost:5174",
+      "https://studybuddy-ai-mu.vercel.app",
+    ],
+    credentials: true,
+  })
+);
 app.use(express.json());
 
-// Store uploads in /uploads
-const upload = multer({
-  dest: path.join(__dirname, "uploads"),
-});
+// ---- Ensure uploads directory exists (Render doesn't have it by default)
+const uploadDir = path.join(__dirname, "uploads");
+if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir);
 
-// Use AI to turn transcript into summary + quiz JSON
+// ---- Multer to accept audio file under field name "audio"
+const upload = multer({ dest: uploadDir });
+
+// ---- Helper: make summary + quiz (strict JSON)
 async function generateSummaryAndQuizFromTranscript(transcript) {
   const prompt = `
-You are a helpful study assistant. I will give you a lecture or meeting transcript.
-1. Write a clear, student-friendly summary in 5–6 sentences.
-2. Create 8–12 multiple-choice questions that check understanding of the KEY ideas.
-3. Each question must have exactly 4 answer choices.
-4. Indicate which choice is correct using "correctIndex" (0-based).
-5. IMPORTANT: Return ONLY valid JSON, no extra text, no backticks, no commentary.
-JSON format example:
+You are a helpful study assistant. Return ONLY valid JSON.
+
+1) "summary": 4–6 sentence, student-friendly summary of the transcript.
+2) "quiz": an array of 8 multiple-choice questions (each has "question", 4 "options", and "correctIndex" 0–3).
+
+JSON SCHEMA:
 {
   "summary": "string",
   "quiz": [
-    {
-      "question": "string",
-      "options": ["A", "B", "C", "D"],
-      "correctIndex": 1
-    }
+    {"question":"string","options":["A","B","C","D"],"correctIndex":0}
   ]
 }
 
-Now use this transcript:
-
+TRANSCRIPT:
 ${transcript}
-  `;
+  `.trim();
 
-  const completion = await client.chat.completions.create({
+const chat = await openai.chat.completions.create({
     model: "gpt-4o-mini",
     messages: [
-      {
-        role: "system",
-        content: "You create summaries and quizzes in strict JSON format.",
-      },
-      {
-        role: "user",
-        content: prompt,
-      },
-    ],
-    temperature: 0.4,
-  });
+        { role: "system", content: "Return STRICT JSON only. No prose." },
+        { role: "user", content: prompt }
+    ]
+});
 
-  const raw = completion.choices[0]?.message?.content?.trim() || "";
-
+  const raw = (chat.choices?.[0]?.message?.content || "").trim();
   let parsed;
   try {
     parsed = JSON.parse(raw);
-  } catch (err) {
-    console.error("Failed to parse AI JSON:", raw);
+  } catch (e) {
+    console.error("AI JSON parse error. Raw:\n", raw);
     throw new Error("AI returned invalid JSON");
   }
-
   if (!parsed.summary || !Array.isArray(parsed.quiz)) {
-    throw new Error("AI JSON missing summary or quiz");
+    throw new Error("AI JSON missing 'summary' or 'quiz'");
   }
-
-  return parsed; // { summary, quiz }
+  return parsed;
 }
 
-// Route: upload audio → transcribe → summarize → quiz
-// --- Audio upload → Whisper transcription → summary + quiz ---
+// ---- Route: upload audio -> transcribe -> summarize -> quiz
 app.post("/api/upload-audio", upload.single("audio"), async (req, res) => {
   try {
-    if (!req.file) {
-      return res.status(400).json({ error: "No file uploaded" });
-    }
-
-    console.log("Received file:", req.file);
+    if (!req.file) return res.status(400).json({ error: "No file uploaded" });
 
     const filePath = req.file.path;
 
-    // 1) Send audio file to OpenAI Whisper for transcription
+    // Use Whisper for speech-to-text. Accepts mp3, mp4, mpeg/mpga, m4a, wav, webm
     const transcription = await openai.audio.transcriptions.create({
+      model: "whisper-1",
       file: fs.createReadStream(filePath),
-      model: "whisper-1", // Whisper accepts mp3, mp4, mpeg, mpga, m4a, wav, webm
       response_format: "text",
     });
 
-    const transcriptText = transcription.text;
-    console.log("Transcript text length:", transcriptText.length);
+    const transcriptText =
+      typeof transcription === "string"
+        ? transcription
+        : transcription.text || "";
 
-    // 2) Use existing helper to generate summary + quiz
-    const { summary, quiz } = await generateSummaryAndQuizFromTranscript(
-      transcriptText
-    );
+    if (!transcriptText || transcriptText.length < 2) {
+      return res
+        .status(400)
+        .json({ error: "Transcription failed or was empty." });
+    }
+
+    const { summary, quiz } =
+      await generateSummaryAndQuizFromTranscript(transcriptText);
 
     return res.json({ summary, quiz });
   } catch (err) {
     console.error("Error in /api/upload-audio:", err);
 
-    // If OpenAI says unsupported file format, send a nice message to the frontend
-    if (
-      err.error &&
-      err.error.code === "unsupported_value" &&
-      err.error.param === "file"
-    ) {
-      return res.status(400).json({
-        error:
-          "This audio format is not supported. Please upload an MP3, M4A, or WAV file.",
-      });
+    // OpenAI file validation errors
+    if (err?.error?.code === "unsupported_value" && err?.error?.param === "file") {
+      return res
+        .status(400)
+        .json({ error: "Unsupported file. Use MP3, M4A, WAV, or WEBM." });
     }
-
-    return res
-      .status(500)
-      .json({ error: "Server error while processing audio." });
+    if (err?.status === 401 || err?.error?.code === "invalid_api_key") {
+      return res.status(500).json({ error: "Invalid OpenAI API key on server." });
+    }
+    if (String(err.message || "").includes("AI returned invalid JSON")) {
+      return res
+        .status(502)
+        .json({ error: "AI returned invalid JSON. Try a shorter audio clip." });
+    }
+    return res.status(500).json({ error: "Server error while processing audio." });
   }
 });
 
-  try {
-    console.log("Received file:", req.file);
-
-    if (!req.file) {
-      return res.status(400).json({ error: "No audio file uploaded" });
-    }
-
-    const audioPath = req.file.path;
-
-    // 1) Transcribe audio
-    const transcription = await client.audio.transcriptions.create({
-      file: fs.createReadStream(audioPath),
-      model: "gpt-4o-mini-transcribe",
-    });
-
-    const transcriptText = transcription.text;
-    console.log("Transcript sample:", transcriptText.slice(0, 200) + "...");
-
-    // 2) Generate summary + quiz
-    const { summary, quiz } = await generateSummaryAndQuizFromTranscript(
-      transcriptText
-    );
-
-    // 3) Send back to frontend
-    res.json({ summary, quiz });
-  } catch (err) {
-    console.error("Error in /api/upload-audio:", err);
-    res.status(500).json({
-      error: "Failed to process audio with AI. Check server logs.",
-    });
-  }
-});
+// ---- Healthcheck
+app.get("/", (_req, res) => res.send("OK"));
 
 app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });
