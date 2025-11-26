@@ -1,10 +1,9 @@
+const express = require("express");
+const cors = require("cors");
+const path = require("path");
+const fs = require("fs");
+const multer = require("multer");
 require("dotenv").config();
-import express from 'express';
-import cors from 'cors';
-// --- AUDIO UPLOAD + TRANSCRIPTION SETUP ---
-import path from "path";
-import fs from "fs";
-import multer from "multer";
 
 // Multer storage
 const storage = multer.diskStorage({
